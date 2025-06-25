@@ -1,0 +1,7 @@
+.filter-row {
+    margin-bottom: 10px;
+}
+.filter-row input,
+.filter-row select {
+    margin-right: 10px;
+}

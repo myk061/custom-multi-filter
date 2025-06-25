@@ -1,0 +1,15 @@
+/* Sticky sidebar içindeki dropdownların tam genişlikte ve blok görünmesi için */
+.theiaStickySidebar .custom-filter-dropdown {
+  width: 100% !important;
+  max-width: 100% !important;
+  display: block !important;
+  margin-bottom: 10px !important;
+  box-sizing: border-box !important;
+  float: none !important;
+  clear: both !important;
+}
+
+/* Sticky sidebar kapsayıcıda overflow sorunları olursa düzelt */
+.theiaStickySidebar {
+  overflow: visible !important;
+}
