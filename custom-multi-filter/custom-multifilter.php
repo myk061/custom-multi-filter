@@ -2,7 +2,7 @@
 /*
 Plugin Name: Custom Multi Filter
 Description: Admin panelden filtre tanımlayıp SEO dostu URL yönlendirmesi yapan filtreleme eklentisi.
-Version: 1.1
+Version: 1.2
 Author: MYK
 */
 
@@ -174,7 +174,7 @@ add_shortcode('custom_filters', function() {
     $filters = json_decode(get_option('custom_filter_definitions', '[]'), true);
     if (!$filters || !is_array($filters)) return '';
     $html = '';
-    foreach ($filters as $i => $filter) {
+    foreach ($filters as $key => $filter) {
         $label = esc_html($filter['label'] ?? 'Seçim Yap');
         $taxonomy = $filter['taxonomy'] ?? 'category';
         $args = ['taxonomy' => $taxonomy, 'hide_empty' => false];
@@ -186,7 +186,7 @@ add_shortcode('custom_filters', function() {
         $terms = get_terms($args);
         if (is_wp_error($terms)) continue;
 
-        $html .= '<select class="custom-filter-dropdown" id="cf-'.$i.'" data-taxonomy="'.esc_attr($taxonomy).'">';
+        $html .= '<select class="custom-filter-dropdown" id="cf-'.$key.'" data-key="'.esc_attr($key).'" data-taxonomy="'.esc_attr($taxonomy).'">';
         $html .= '<option value="">'.$label.'</option>';
         foreach ($terms as $term) {
             $html .= '<option value="'.esc_attr($term->slug).'">'.esc_html($term->name).'</option>';
@@ -283,13 +283,24 @@ add_action('template_redirect', function() {
 add_action('pre_get_posts', function($query) {
     if (!is_admin() && $query->is_main_query() && get_query_var('custom_filters')) {
         $slugs_arr = explode('/', trim(get_query_var('custom_filters'), '/'));
-        $term_ids = [];
+        $tax_query = [];
+
         foreach ($slugs_arr as $slug) {
             $term = get_term_by('slug', $slug, 'category');
-            if ($term) $term_ids[] = $term->term_id;
+            if ($term) {
+                $tax_query[] = [
+                    'taxonomy' => 'category',
+                    'field'    => 'term_id',
+                    'terms'    => [$term->term_id],
+                ];
+            }
         }
-        if (!empty($term_ids)) {
-            $query->set('category__in', $term_ids);
+
+        if (!empty($tax_query)) {
+            $query->set('tax_query', [
+                'relation' => 'AND',
+                ...$tax_query
+            ]);
         }
     }
 });
@@ -331,3 +342,101 @@ add_filter('pre_get_document_title', function($title) {
 
     return $title;
 }, 9999);
+
+add_action('wp_enqueue_scripts', function () {
+    wp_enqueue_script('custom-filter-frontend', plugin_dir_url(__FILE__) . 'frontend.js', ['jquery'], null, true);
+
+    $filters = json_decode(get_option('custom_filter_definitions', '[]'), true);
+    $placeholders = [];
+    if (is_array($filters)) {
+        foreach ($filters as $key => $filter) {
+            $placeholders[$key] = $filter['label'] ?? 'Seçim Yap';
+        }
+    }
+
+wp_localize_script('custom-filter-frontend', 'customFilterAjax', [
+    'ajaxurl'     => admin_url('admin-ajax.php'),
+    'base_slug'   => get_option('custom_filter_base_slug', 'filter'),
+    'base_url'    => rtrim(home_url(), '/') . '/' . trim(get_option('custom_filter_base_slug', 'filter'), '/'),
+    'home_url'    => trailingslashit(home_url()),
+    'placeholders'=> $placeholders,
+]);
+});
+
+add_action('wp_ajax_get_filtered_terms', 'custom_filter_get_filtered_terms');
+add_action('wp_ajax_nopriv_get_filtered_terms', 'custom_filter_get_filtered_terms');
+
+function custom_filter_get_filtered_terms() {
+    $filters = json_decode(get_option('custom_filter_definitions', '[]'), true);
+    $selected_slugs = isset($_GET['selected_slugs']) ? (array) $_GET['selected_slugs'] : [];
+    $current_index = isset($_GET['current_index']) ? intval($_GET['current_index']) : -1;
+
+    $results = [];
+
+    // 1. Adım: Seçili slug'lara göre içerikleri bul
+    $query_args = [
+        'post_type' => 'post',
+        'posts_per_page' => -1,
+        'fields' => 'ids',
+    ];
+
+    $tax_query = [];
+
+    foreach ($selected_slugs as $slug) {
+        if (!$slug) continue;
+        $term = get_term_by('slug', $slug, 'category');
+        if ($term) {
+            $tax_query[] = [
+                'taxonomy' => 'category',
+                'field'    => 'term_id',
+                'terms'    => $term->term_id,
+            ];
+        }
+    }
+
+    if (count($tax_query) > 1) {
+        $tax_query['relation'] = 'AND'; // Her seçilen kategoriyle ilişkili içerikler
+    }
+
+    if (!empty($tax_query)) {
+        $query_args['tax_query'] = $tax_query;
+    }
+
+    $matching_post_ids = get_posts($query_args); // Seçilen kategorilere göre eşleşen içerikler
+
+    // 2. Adım: Geriye kalan filtreler için sadece ortak içeriklerdeki kategorileri döndür
+    foreach ($filters as $i => $filter) {
+        if ($i <= $current_index) {
+            $results[$i] = []; // önceki filtreler değiştirilmez
+            continue;
+        }
+
+        $taxonomy = $filter['taxonomy'] ?? 'category';
+
+        $args = [
+            'taxonomy'   => $taxonomy,
+            'hide_empty' => false,
+        ];
+
+        if ($taxonomy === 'category' && isset($filter['parent'])) {
+            $args['parent'] = intval($filter['parent']);
+        }
+
+        $terms = get_terms($args);
+        $valid_terms = [];
+
+        foreach ($terms as $term) {
+            $post_ids = get_objects_in_term($term->term_id, $taxonomy);
+            if (array_intersect($post_ids, $matching_post_ids)) {
+                $valid_terms[] = [
+                    'name' => $term->name,
+                    'slug' => $term->slug,
+                ];
+            }
+        }
+
+        $results[$i] = $valid_terms;
+    }
+
+    wp_send_json_success($results);
+}
